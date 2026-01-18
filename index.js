@@ -3,247 +3,145 @@ const axios = require('axios');
 
 const AIO_URL = "https://aiometadata.stremio.ru/stremio/13771301-c143-4a9a-9c9c-d588609a944c";
 const TMDB_API_KEY = process.env.TMDB_API_KEY || "c5ac73f999688f3863fbe5c6c905a189";
-const TVDB_API_KEY = process.env.TVDB_API_KEY || "ef90006d-336e-4b11-a97b-ffdd650cf9a6";
 
-// TVDB requires JWT token
-let TVDB_TOKEN = null;
-async function getTVDBToken() {
-    if (TVDB_TOKEN && Date.now() < TVDB_TOKEN.expires) {
-        return TVDB_TOKEN.token;
-    }
+// Simple known-content filter
+const knownBlacklist = [
+    // Korean dramas
+    { id: 'tt10850932', title: 'Crash Landing on You', type: 'series', reason: 'kdrama' },
+    { id: 'tt11530502', title: 'Squid Game', type: 'series', reason: 'korean' },
+    { id: 'tt12844900', title: 'The Glory', type: 'series', reason: 'kdrama' },
+    { id: 'tt6464286', title: 'Goblin', type: 'series', reason: 'kdrama' },
+    { id: 'tt5323662', title: 'Descendants of the Sun', type: 'series', reason: 'kdrama' },
+    { id: 'tt11239552', title: 'Itaewon Class', type: 'series', reason: 'kdrama' },
+    { id: 'tt13433800', title: 'Vincenzo', type: 'series', reason: 'kdrama' },
     
-    try {
-        const response = await axios.post('https://api4.thetvdb.com/v4/login', {
-            apikey: TVDB_API_KEY
-        });
-        
-        TVDB_TOKEN = {
-            token: response.data.data.token,
-            expires: Date.now() + 23 * 60 * 60 * 1000 // 23 hours
-        };
-        
-        return TVDB_TOKEN.token;
-    } catch (error) {
-        console.error('TVDB Login Error:', error.message);
-        return null;
-    }
-}
+    // Chinese
+    { id: 'tt10554898', title: 'The Untamed', type: 'series', reason: 'chinese' },
+    
+    // Indian
+    { id: 'tt8178634', title: 'RRR', type: 'movie', reason: 'indian' },
+    { id: 'tt5074352', title: 'Dangal', type: 'movie', reason: 'indian' },
+];
 
-// Enhanced cache
-const cache = new Map();
-const CACHE_TTL = 24 * 60 * 60 * 1000;
-
-async function getTVDBInfo(imdbId, title) {
-    const token = await getTVDBToken();
-    if (!token) return null;
-    
-    try {
-        // Search by IMDb ID
-        let tvdbId = null;
-        
-        if (imdbId && imdbId.startsWith('tt')) {
-            const searchRes = await axios.get(
-                `https://api4.thetvdb.com/v4/search?imdbId=${imdbId}`,
-                { headers: { Authorization: `Bearer ${token}` } }
-            );
-            
-            if (searchRes.data.data && searchRes.data.data.length > 0) {
-                tvdbId = searchRes.data.data[0].tvdb_id;
-            }
-        }
-        
-        // If not found, search by title
-        if (!tvdbId && title) {
-            const searchRes = await axios.get(
-                `https://api4.thetvdb.com/v4/search?query=${encodeURIComponent(title)}`,
-                { headers: { Authorization: `Bearer ${token}` } }
-            );
-            
-            if (searchRes.data.data && searchRes.data.data.length > 0) {
-                tvdbId = searchRes.data.data[0].tvdb_id;
-            }
-        }
-        
-        // Get series details
-        if (tvdbId) {
-            const seriesRes = await axios.get(
-                `https://api4.thetvdb.com/v4/series/${tvdbId}/extended`,
-                { headers: { Authorization: `Bearer ${token}` } }
-            );
-            
-            return seriesRes.data.data;
-        }
-        
-        return null;
-        
-    } catch (error) {
-        console.error('TVDB API Error:', error.message);
-        return null;
-    }
-}
-
-async function getEnrichedMetadata(imdbId, title, type) {
-    const cacheKey = `enriched_${imdbId || title}`;
-    const cached = cache.get(cacheKey);
-    
-    if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
-        return cached.data;
-    }
-    
-    // Try TVDB first for series
-    let metadata = null;
-    if (type === 'series') {
-        metadata = await getTVDBInfo(imdbId, title);
-    }
-    
-    // Fallback to TMDB
-    if (!metadata) {
-        metadata = await getTMDBInfo(imdbId, title, type);
-    }
-    
-    if (metadata) {
-        cache.set(cacheKey, {
-            data: metadata,
-            timestamp: Date.now()
-        });
-    }
-    
-    return metadata;
-}
-
-// Update getTMDBInfo function to use from previous code
-async function getTMDBInfo(imdbId, title, type) {
-    // ... keep the TMDB function from previous code ...
-}
-
-// Enhanced filtering with both TMDB/TVDB data
-function shouldFilter(item, metadata) {
+// Simple keyword filter
+function shouldFilterSimple(item) {
     if (!item) return false;
     
-    // Fallback if no metadata
-    if (!metadata) {
-        const text = (item.name + ' ' + (item.description || '')).toLowerCase();
-        const blockPatterns = [
-            'k-drama', 'kdrama', 'korean drama',
-            'chinese drama', 'cdrama',
-            'bollywood', 'tollywood', 'indian'
-        ];
-        return blockPatterns.some(pattern => text.includes(pattern));
+    // Check known blacklist
+    if (item.imdb_id) {
+        const blacklisted = knownBlacklist.find(b => b.id === item.imdb_id);
+        if (blacklisted) {
+            console.log(`Blacklisted by ID: ${item.name} (${blacklisted.reason})`);
+            return true;
+        }
     }
     
-    // Extract country from metadata (TMDB or TVDB format)
-    let countries = [];
-    let genres = [];
+    // Check title/description keywords
+    const text = (item.name + ' ' + (item.description || '')).toLowerCase();
     
-    // TMDB format
-    if (metadata.production_countries) {
-        countries = metadata.production_countries.map(c => c.iso_3166_1);
-        genres = (metadata.genres || []).map(g => g.name);
-    }
-    // TVDB format
-    else if (metadata.originalCountry) {
-        countries = [metadata.originalCountry];
-        genres = (metadata.genres || []).map(g => g.name);
-    }
+    // Korean drama patterns
+    const kdramaKeywords = [
+        'k-drama', 'kdrama', 'korean drama',
+        'crash landing on you',
+        'squid game',
+        'the glory',
+        'goblin',
+        'descendants of the sun',
+        'itaewon class',
+        'vincenzo',
+        'hospital playlist',
+        'penthouse',
+        'sky castle'
+    ];
     
-    // TVDB might have country as string
-    if (metadata.country && typeof metadata.country === 'string') {
-        countries.push(metadata.country);
-    }
+    // Chinese patterns
+    const chineseKeywords = [
+        'chinese drama', 'cdrama', 'c-drama',
+        'the untamed',
+        'word of honor',
+        'historical drama',
+        'wuxia'
+    ];
     
-    // Normalize country codes/names
-    const normalizedCountries = countries.map(c => c.toLowerCase());
+    // Indian patterns
+    const indianKeywords = [
+        'bollywood', 'tollywood', 'indian movie',
+        'rrr', 'dangal', '3 idiots'
+    ];
     
-    // Check if Chinese content
-    const isChinese = normalizedCountries.some(c => 
-        c === 'cn' || c === 'china' || c.includes('china') || 
-        c === 'tw' || c.includes('taiwan') ||
-        c === 'hk' || c.includes('hong kong')
-    );
+    const allKeywords = [...kdramaKeywords, ...chineseKeywords, ...indianKeywords];
     
-    // Check if Indian content
-    const isIndian = normalizedCountries.some(c => 
-        c === 'in' || c === 'india' || c.includes('india')
-    );
-    
-    // Check if Korean content
-    const isKorean = normalizedCountries.some(c => 
-        c === 'kr' || c === 'korea' || c.includes('korea')
-    );
-    
-    // Block all Chinese/Indian
-    if (isChinese || isIndian) {
-        console.log(`Blocking ${item.name} - Countries: ${countries.join(', ')}`);
+    if (allKeywords.some(keyword => text.includes(keyword))) {
+        console.log(`Filtered by keyword: ${item.name}`);
         return true;
-    }
-    
-    // Smart Korean filtering
-    if (isKorean) {
-        const hasDrama = genres.includes('Drama') || genres.includes('드라마');
-        const kdramaSubgenres = ['Romance', 'Romantic', 'Comedy', 'Family', 'Medical', 'Legal', 'Melodrama'];
-        const kdramaCount = genres.filter(g => 
-            kdramaSubgenres.some(sub => g.toLowerCase().includes(sub.toLowerCase()))
-        ).length;
-        
-        // Also check TVDB genre IDs for Korean drama (10767 is Korean Drama genre in TVDB)
-        const isKoreanDramaGenre = metadata.genre && (
-            metadata.genre.includes('Korean') || 
-            (metadata.genreId && metadata.genreId.includes(10767))
-        );
-        
-        const shouldBlock = (hasDrama && kdramaCount >= 2) || isKoreanDramaGenre;
-        
-        console.log(`Korean check: ${item.name}, Genres: ${genres.join(', ')}, HasDrama: ${hasDrama}, KdramaCount: ${kdramaCount}, Block: ${shouldBlock}`);
-        return shouldBlock;
     }
     
     return false;
 }
 
-// Builder and handlers remain similar but use getEnrichedMetadata
 const builder = new addonBuilder({
     id: 'org.stremio.removit',
-    version: '1.2.0',
-    name: 'Removit Pro Filter',
-    description: 'Smart filtering with TMDB & TVDB integration',
+    version: '1.3.0',
+    name: 'Removit Simple Filter',
+    description: 'Simple blacklist/keyword filtering',
     resources: ['catalog', 'meta'],
     types: ['movie', 'series'],
     catalogs: []
 });
 
+// Test endpoint to verify AIO connection
 builder.defineCatalogHandler(async ({type, id}) => {
+    console.log(`Catalog request: ${type}/${id}`);
+    
     try {
-        const response = await axios.get(`${AIO_URL}/catalog/${type}/${id}.json`);
-        const items = response.data.metas || [];
+        // Test AIO connection
+        const testUrl = `${AIO_URL}/catalog/${type}/${id}.json`;
+        console.log(`Fetching from AIO: ${testUrl}`);
         
-        console.log(`Processing ${items.length} items`);
+        const response = await axios.get(testUrl, { timeout: 10000 });
+        console.log(`AIO response status: ${response.status}`);
+        console.log(`AIO data keys: ${Object.keys(response.data)}`);
+        console.log(`Number of metas: ${response.data.metas?.length || 0}`);
         
-        const filteredItems = [];
-        for (const item of items) {
-            const metadata = await getEnrichedMetadata(item.imdb_id, item.name, type);
-            if (!shouldFilter(item, metadata)) {
-                filteredItems.push(item);
-            }
+        if (response.data.metas && response.data.metas.length > 0) {
+            // Show first 3 items for debugging
+            response.data.metas.slice(0, 3).forEach(item => {
+                console.log(`Sample: ${item.name} | ID: ${item.imdb_id} | Type: ${item.type}`);
+            });
+            
+            // Apply simple filter
+            const filtered = response.data.metas.filter(item => !shouldFilterSimple(item));
+            console.log(`Filtered ${response.data.metas.length} → ${filtered.length}`);
+            return { metas: filtered };
         }
         
-        console.log(`Filtered ${items.length} → ${filteredItems.length} items`);
-        return { metas: filteredItems };
+        return { metas: [] };
         
     } catch (error) {
-        console.error('Catalog Error:', error.message);
+        console.error('AIO Error:', error.message);
+        if (error.response) {
+            console.error('Response status:', error.response.status);
+            console.error('Response data:', JSON.stringify(error.response.data));
+        }
         return { metas: [] };
     }
 });
 
 builder.defineMetaHandler(async ({type, id}) => {
+    console.log(`Meta request: ${type}/${id}`);
+    
     try {
         const response = await axios.get(`${AIO_URL}/meta/${type}/${id}.json`);
         const meta = response.data.meta;
         
-        if (!meta) return { meta: null };
+        if (!meta) {
+            console.log(`No meta found for ${type}/${id}`);
+            return { meta: null };
+        }
         
-        const metadata = await getEnrichedMetadata(meta.imdb_id, meta.name, type);
-        if (shouldFilter(meta, metadata)) {
+        console.log(`Meta received: ${meta.name} | ID: ${meta.imdb_id}`);
+        
+        if (shouldFilterSimple(meta)) {
             console.log(`Filtering meta: ${meta.name}`);
             return { meta: null };
         }
@@ -257,6 +155,5 @@ builder.defineMetaHandler(async ({type, id}) => {
 });
 
 serveHTTP(builder.getInterface(), { port: 7000 });
-console.log('Removit Pro Filter running');
-console.log('TMDB API:', TMDB_API_KEY ? 'Loaded' : 'Missing');
-console.log('TVDB API:', TVDB_API_KEY ? 'Loaded' : 'Missing');
+console.log('Removit Simple Filter running');
+console.log('AIO URL:', AIO_URL);
