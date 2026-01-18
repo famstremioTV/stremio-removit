@@ -1,171 +1,192 @@
 const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
 const axios = require('axios');
 
+// ========== CONFIGURATION ==========
+const TORRENTIO_BASE_URL = "https://torrentio.strem.fun/providers=yts,eztv,rarbg,1337x,thepiratebay,kickasstorrents,torrentgalaxy,magnetdl,horriblesubs,nyaasi,tokyotosho,anidex|qualityfilter=threed,720p,480p,other,scr,cam,unknown";
 const AIO_URL = "https://aiometadata.stremio.ru/stremio/13771301-c143-4a9a-9c9c-d588609a944c";
 
-const builder = new addonBuilder({
-    id: 'org.stremio.removit',
-    version: '1.4.0',
-    name: 'Removit Filter',
-    description: 'Filters Korean dramas, Chinese & Indian content from metadata',
-    resources: ['catalog', 'meta'],
-    types: ['movie', 'series'],
-    catalogs: []
-});
-
-// 1. HARDCODED BLACKLIST (IMMEDIATE BLOCK)
 const HARDCODED_BLACKLIST = [
     'tt10850932', // Crash Landing on You
     'tt11530502', // Squid Game
-    'tt12844900', // The Glory
-    'tt6464286',  // Goblin
-    'tt5323662',  // Descendants of the Sun
-    'tt11239552', // Itaewon Class
-    'tt13433800', // Vincenzo
+    'tt8178634',  // RRR
+    'tt5074352',  // Dangal
     'tt10554898', // The Untamed (Chinese)
-    'tt8178634',  // RRR (Indian)
-    'tt5074352',  // Dangal (Indian)
+    'tt0266308',  // Winter Sonata (classic K-drama)
 ];
 
-// 2. ENHANCED FILTERING LOGIC
-function shouldFilterItem(item) {
-    if (!item) return false;
+// ========== BUILDER SETUP ==========
+const builder = new addonBuilder({
+    id: 'org.stremio.removit-proxy',
+    version: '2.0.0',
+    name: 'Removit Torrentio Proxy',
+    description: 'Proxies and filters Torrentio catalogs',
+    resources: ['catalog', 'meta', 'stream'],
+    types: ['movie', 'series'],
+    catalogs: [] // Let Stremio discover catalogs from Torrentio
+});
 
-    // Check hardcoded blacklist first (fastest path)
+// ========== FAST HEURISTIC FILTER ==========
+function quickFilter(item) {
+    if (!item) return true;
+    
+    // 1. Hardcoded blacklist check
     if (item.imdb_id && HARDCODED_BLACKLIST.includes(item.imdb_id)) {
-        console.log(`[Filter] Hardcoded block: ${item.name} (${item.imdb_id})`);
+        console.log(`  [QuickFilter] Hardcoded: ${item.name}`);
         return true;
     }
-
-    const country = item.country || '';
-    const countryLower = country.toLowerCase();
-    const genres = item.genres || [];
+    
+    // 2. Title/description keyword scan
     const text = (item.name + ' ' + (item.description || '')).toLowerCase();
-
-    console.log(`[Filter] "${item.name}" | Country: "${country}" | Genres: [${genres.join(', ')}]`);
-
-    // IMPROVED: Check for whole country codes/names, not substrings
-    const countryParts = countryLower.split(/,\s*/); // Split by comma
-    const isChinese = countryParts.some(part => 
-        part === 'cn' || part === 'china' || 
-        part === 'tw' || part === 'taiwan' ||
-        part === 'hk' || part === 'hong kong' ||
-        part.includes('china') // catches "republic of china" etc.
-    );
-    const isIndian = countryParts.some(part => 
-        part === 'in' || part === 'india' || part.includes('india')
-    );
-
-    if (isChinese || isIndian) {
-        console.log(`[Filter] Block: Chinese/Indian region (Country parts: ${countryParts.join(', ')})`);
-        return true;
-    }
-
-    // SMART KOREAN FILTERING - PRECISE VERSION
-const isKorean = countryParts.some(part => 
-    part === 'kr' || part === 'kor' || part === 'korea' || part.includes('korea')
-);
-
-if (isKorean) {
-    const hasDrama = genres.includes('Drama');
     
-    // PRIMARY MELODRAMA SUBGENRES (always filter if present)
-    const hardMelodramaGenres = ['Romance', 'Melodrama', 'Family'];
-    
-    // PROFESSIONAL DRAMA SUBGENRES (filter if combined with Romance/Melodrama)
-    const professionalGenres = ['Medical', 'Legal', 'Comedy'];
-    
-    // Check for hard melodrama genres
-    const hasHardMelodrama = genres.some(g => hardMelodramaGenres.includes(g));
-    
-    // Check for professional genres
-    const hasProfessional = genres.some(g => professionalGenres.includes(g));
-    
-    // Also scan title/description for professional keywords
-    const text = (item.name + ' ' + (item.description || '')).toLowerCase();
-    const professionalKeywords = ['doctor', 'hospital', 'surgeon', 'medical', 'lawyer', 'legal', 'court', 'judge', 'prosecutor'];
-    const hasProfessionalKeyword = professionalKeywords.some(keyword => text.includes(keyword));
-    
-    console.log(`[Filter] Korean check: Drama=${hasDrama}, HardMelodrama=${hasHardMelodrama}, Professional=${hasProfessional}, Keyword=${hasProfessionalKeyword}`);
-    
-    // DECISION MATRIX:
-    // 1. BLOCK: Any Korean content with explicit Romance/Melodrama/Family
-    if (hasHardMelodrama) {
-        console.log(`[Filter] Block: Contains hard melodrama genre (${genres.filter(g => hardMelodramaGenres.includes(g)).join(', ')})`);
-        return true;
-    }
-    
-    // 2. BLOCK: Professional drama (Medical/Legal) WITH Drama tag
-    if (hasDrama && (hasProfessional || hasProfessionalKeyword)) {
-        console.log(`[Filter] Block: Professional Korean drama (${hasProfessional ? 'genre tag' : 'keyword detected'})`);
-        return true;
-    }
-    
-    // 3. ALLOW: Everything else (Action, Thriller, Sci-Fi, Crime, Horror, etc.)
-    console.log(`[Filter] Allow: Korean non-melodrama`);
-    return false;
-}
-
-    // KEYWORD FALLBACK (if country/genre data is missing)
     const blockKeywords = [
         'k-drama', 'kdrama', 'korean drama',
         'chinese drama', 'cdrama',
-        'bollywood', 'tollywood', 'indian movie'
+        'bollywood', 'tollywood', 'indian'
     ];
-
-    if (blockKeywords.some(keyword => text.includes(keyword))) {
-        console.log(`[Filter] Block: Keyword match`);
+    
+    if (blockKeywords.some(kw => text.includes(kw))) {
+        console.log(`  [QuickFilter] Keyword: ${item.name}`);
         return true;
     }
-
-    console.log(`[Filter] Allow: Passes all checks`);
+    
+    // 3. Korean title patterns
+    const koreanPatterns = [
+        /^.*\d{4}$/, // Title ends with year (common for K-dramas)
+        /episode \d+/,
+        /hospital|doctor|lawyer|ceo|prosecutor|fated|destiny|first love|contract marriage/,
+    ];
+    
+    if (koreanPatterns.some(p => p.test(text))) {
+        console.log(`  [QuickFilter] Pattern: ${item.name}`);
+        return true;
+    }
+    
+    // 4. Common K-drama title structures
+    const kdramaTitles = [
+        'crash landing on you',
+        'descendants of the sun', 
+        'goblin',
+        'itaewon class',
+        'vincenzo',
+        'hospital playlist',
+        'reply 1997',
+        'boys over flowers'
+    ];
+    
+    if (kdramaTitles.some(title => text.includes(title))) {
+        console.log(`  [QuickFilter] Known title: ${item.name}`);
+        return true;
+    }
+    
     return false;
 }
 
-// CATALOG HANDLER (AIO doesn't provide catalogs)
-builder.defineCatalogHandler(async ({type, id}) => {
-    console.log(`[Catalog] ${type}/${id} - No catalog data from AIO`);
-    return { metas: [] };
+// ========== CATALOG HANDLER (PROXIES TORRENTIO) ==========
+builder.defineCatalogHandler(async ({type, id, extra}) => {
+    console.log(`\n[Catalog] ====== START ======`);
+    console.log(`[Catalog] Type: ${type}, ID: ${id}, Extra: ${JSON.stringify(extra)}`);
+    
+    try {
+        // 1. Fetch from Torrentio
+        const torrentioUrl = `${TORRENTIO_BASE_URL}/catalog/${type}/${id}.json`;
+        console.log(`[Catalog] Fetching: ${torrentioUrl}`);
+        
+        const response = await axios.get(torrentioUrl, { 
+            timeout: 15000,
+            headers: {
+                'User-Agent': 'Removit-Proxy/2.0.0'
+            }
+        });
+        
+        const items = response.data.metas || [];
+        console.log(`[Catalog] Torrentio returned ${items.length} items`);
+        
+        if (items.length > 0) {
+            console.log(`[Catalog] Sample: "${items[0].name}" (${items[0].imdb_id || 'no id'})`);
+        }
+        
+        // 2. Apply quick filter (LIMIT to first 40 for testing)
+        const testLimit = 40;
+        const itemsToProcess = items.slice(0, testLimit);
+        console.log(`[Catalog] Processing first ${itemsToProcess.length} items`);
+        
+        const filtered = [];
+        for (const item of itemsToProcess) {
+            if (!quickFilter(item)) {
+                filtered.push(item);
+            }
+        }
+        
+        console.log(`[Catalog] Filtered ${itemsToProcess.length} → ${filtered.length}`);
+        console.log(`[Catalog] ====== END ======\n`);
+        
+        // 3. Return filtered results
+        return { metas: filtered };
+        
+    } catch (error) {
+        console.error('[Catalog] ERROR:', error.message);
+        if (error.response) {
+            console.error('Status:', error.response.status);
+            console.error('Data:', error.response.data);
+        }
+        return { metas: [] };
+    }
 });
 
-// META HANDLER (WHERE FILTERING HAPPENS)
+// ========== META HANDLER (PROXIES AIO) ==========
 builder.defineMetaHandler(async ({type, id}) => {
     console.log(`[Meta] Request: ${type}/${id}`);
     
     try {
-        const response = await axios.get(`${AIO_URL}/meta/${type}/${id}.json`, {
-            timeout: 10000
-        });
-        
+        const response = await axios.get(`${AIO_URL}/meta/${type}/${id}.json`);
         const meta = response.data.meta;
+        
         if (!meta) {
-            console.log(`[Meta] No meta in response`);
+            console.log(`[Meta] No meta found for ${id}`);
             return { meta: null };
         }
-
-        console.log(`[Meta] Fetched: "${meta.name}"`);
-
-        if (shouldFilterItem(meta)) {
+        
+        // Use same quick filter logic
+        if (quickFilter(meta)) {
             console.log(`[Meta] 🚫 FILTERED: "${meta.name}"`);
-            return { meta: null }; // Tells Stremio item doesn't exist
+            return { meta: null };
         }
-
+        
         console.log(`[Meta] ✅ ALLOWED: "${meta.name}"`);
-        return { meta }; // Return original metadata
-
+        return { meta };
+        
     } catch (error) {
-        console.error(`[Meta] Error: ${error.message}`);
+        console.error('[Meta] Error:', error.message);
         return { meta: null };
     }
 });
 
-// START SERVER
+// ========== STREAM HANDLER (PROXIES TORRENTIO) ==========
+builder.defineStreamHandler(async ({type, id}) => {
+    console.log(`[Stream] Request: ${type}/${id}`);
+    
+    try {
+        const streamUrl = `${TORRENTIO_BASE_URL}/stream/${type}/${id}.json`;
+        const response = await axios.get(streamUrl, { timeout: 10000 });
+        
+        const streamCount = response.data.streams?.length || 0;
+        console.log(`[Stream] Returning ${streamCount} streams`);
+        return { streams: response.data.streams || [] };
+        
+    } catch (error) {
+        console.error('[Stream] Error:', error.message);
+        return { streams: [] };
+    }
+});
+
+// ========== START SERVER ==========
 serveHTTP(builder.getInterface(), { port: 7000 });
 
 console.log('========================================');
-console.log('Removit Filter v1.4.0');
+console.log('Removit Torrentio Proxy v2.0.0');
 console.log('Successfully started on port 7000');
-console.log(`Proxying AIO: ${AIO_URL}`);
+console.log('Proxying Torrentio:', TORRENTIO_BASE_URL.substring(0, 60) + '...');
+console.log('Proxying AIO:', AIO_URL);
 console.log('Hardcoded blacklist:', HARDCODED_BLACKLIST.length, 'titles');
-console.log('Waiting for requests...');
-console.log('========================================');
+console.log('TEST MODE: Processing first 40 catalog items only');
+console.log('========================================\n');
