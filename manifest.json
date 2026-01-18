@@ -1,0 +1,9 @@
+{
+  "id": "org.stremio.removit",
+  "version": "1.0.0",
+  "name": "Removit Content Filter",
+  "description": "Filters Korean dramas, Chinese TV, and Indian content from your catalogs",
+  "resources": ["catalog", "meta"],
+  "types": ["movie", "series"],
+  "catalogs": []
+}
