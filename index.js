@@ -37,25 +37,34 @@ function shouldFilterItem(item) {
         return true;
     }
 
-    const country = item.country ? item.country.toLowerCase() : '';
+    const country = item.country || '';
+    const countryLower = country.toLowerCase();
     const genres = item.genres || [];
     const text = (item.name + ' ' + (item.description || '')).toLowerCase();
 
     console.log(`[Filter] "${item.name}" | Country: "${country}" | Genres: [${genres.join(', ')}]`);
 
-    // BLOCK ALL CHINESE/INDIAN CONTENT
-    const isChinese = country.includes('cn') || country.includes('china') || 
-                      country.includes('tw') || country.includes('taiwan') ||
-                      country.includes('hk') || country.includes('hong kong');
-    const isIndian = country.includes('in') || country.includes('india');
+    // IMPROVED: Check for whole country codes/names, not substrings
+    const countryParts = countryLower.split(/,\s*/); // Split by comma
+    const isChinese = countryParts.some(part => 
+        part === 'cn' || part === 'china' || 
+        part === 'tw' || part === 'taiwan' ||
+        part === 'hk' || part === 'hong kong' ||
+        part.includes('china') // catches "republic of china" etc.
+    );
+    const isIndian = countryParts.some(part => 
+        part === 'in' || part === 'india' || part.includes('india')
+    );
 
     if (isChinese || isIndian) {
-        console.log(`[Filter] Block: Chinese/Indian region`);
+        console.log(`[Filter] Block: Chinese/Indian region (Country parts: ${countryParts.join(', ')})`);
         return true;
     }
 
     // SMART KOREAN FILTERING
-    const isKorean = country.includes('kr') || country.includes('kor') || country.includes('korea');
+    const isKorean = countryParts.some(part => 
+        part === 'kr' || part === 'kor' || part === 'korea' || part.includes('korea')
+    );
     
     if (isKorean) {
         const hasDrama = genres.includes('Drama');
