@@ -61,31 +61,50 @@ function shouldFilterItem(item) {
         return true;
     }
 
-    // SMART KOREAN FILTERING
-    const isKorean = countryParts.some(part => 
-        part === 'kr' || part === 'kor' || part === 'korea' || part.includes('korea')
-    );
+    // SMART KOREAN FILTERING - PRECISE VERSION
+const isKorean = countryParts.some(part => 
+    part === 'kr' || part === 'kor' || part === 'korea' || part.includes('korea')
+);
+
+if (isKorean) {
+    const hasDrama = genres.includes('Drama');
     
-    if (isKorean) {
-        const hasDrama = genres.includes('Drama');
-        const kdramaSubgenres = ['Romance', 'Comedy', 'Medical', 'Legal', 'Family', 'Melodrama'];
-        const matchingSubgenres = genres.filter(g => kdramaSubgenres.includes(g));
-
-        // Your rule: Block if Korean Drama with 2+ typical subgenres
-        if (hasDrama && matchingSubgenres.length >= 2) {
-            console.log(`[Filter] Block: Korean Drama (Drama + ${matchingSubgenres.length} subgenres)`);
-            return true;
-        }
-        
-        // Also block if explicitly tagged as Korean genre
-        if (genres.some(g => g.toLowerCase().includes('korean'))) {
-            console.log(`[Filter] Block: Korean genre tag`);
-            return true;
-        }
-
-        console.log(`[Filter] Allow: Korean non-drama`);
-        return false;
+    // PRIMARY MELODRAMA SUBGENRES (always filter if present)
+    const hardMelodramaGenres = ['Romance', 'Melodrama', 'Family'];
+    
+    // PROFESSIONAL DRAMA SUBGENRES (filter if combined with Romance/Melodrama)
+    const professionalGenres = ['Medical', 'Legal', 'Comedy'];
+    
+    // Check for hard melodrama genres
+    const hasHardMelodrama = genres.some(g => hardMelodramaGenres.includes(g));
+    
+    // Check for professional genres
+    const hasProfessional = genres.some(g => professionalGenres.includes(g));
+    
+    // Also scan title/description for professional keywords
+    const text = (item.name + ' ' + (item.description || '')).toLowerCase();
+    const professionalKeywords = ['doctor', 'hospital', 'surgeon', 'medical', 'lawyer', 'legal', 'court', 'judge', 'prosecutor'];
+    const hasProfessionalKeyword = professionalKeywords.some(keyword => text.includes(keyword));
+    
+    console.log(`[Filter] Korean check: Drama=${hasDrama}, HardMelodrama=${hasHardMelodrama}, Professional=${hasProfessional}, Keyword=${hasProfessionalKeyword}`);
+    
+    // DECISION MATRIX:
+    // 1. BLOCK: Any Korean content with explicit Romance/Melodrama/Family
+    if (hasHardMelodrama) {
+        console.log(`[Filter] Block: Contains hard melodrama genre (${genres.filter(g => hardMelodramaGenres.includes(g)).join(', ')})`);
+        return true;
     }
+    
+    // 2. BLOCK: Professional drama (Medical/Legal) WITH Drama tag
+    if (hasDrama && (hasProfessional || hasProfessionalKeyword)) {
+        console.log(`[Filter] Block: Professional Korean drama (${hasProfessional ? 'genre tag' : 'keyword detected'})`);
+        return true;
+    }
+    
+    // 3. ALLOW: Everything else (Action, Thriller, Sci-Fi, Crime, Horror, etc.)
+    console.log(`[Filter] Allow: Korean non-melodrama`);
+    return false;
+}
 
     // KEYWORD FALLBACK (if country/genre data is missing)
     const blockKeywords = [
